@@ -40,7 +40,6 @@ yarn-error.log*
 /telegram-bot/bot*.log
 __pycache__/
 *.py[cod]
-
 # vercel
 .vercel
 
@@ -50,3 +49,5 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+/.codex_tmp/
+*.tsbuildinfo
