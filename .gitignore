@@ -50,3 +50,5 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+/.codex_tmp/
+*.tsbuildinfo

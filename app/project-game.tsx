@@ -7,24 +7,59 @@ import { DEADLINE, dependenciesComplete, generateScenario, isTaskActive, isTaskC
 import type { Person, ProjectTask } from "./game-scenario";
 
 type GameStatus = "ready" | "running" | "paused" | "won" | "lost";
-type EventTone = "good" | "bad";
-type EventKind = "task-progress" | "budget" | "boost" | "task-setback" | "task-cost" | "absence" | "training" | "discount" | "assist" | "slow-time";
+type EventTone = "good" | "bad" | "mixed";
 type FailureReason = "deadline" | "budget" | "both" | null;
 
-type TaskState = { progress: number; spent: number };
-type EventDefinition = {
-  title: string;
-  text: string;
-  effect: string;
-  icon: string;
-  kind: EventKind;
-  tone: EventTone;
-  value: number;
-  targetTask?: number;
-  targetPerson?: number;
+type TaskState = {
+  progress: number;
+  spent: number;
+  startedAt: number | null;
+  completedAt: number | null;
+  blockedWeeks: number;
+  overloadWeeks: number;
+  unassignedWeeks: number;
+  eventProgress: number;
+  eventCost: number;
 };
 
-type EventHistoryItem = EventDefinition & { week: number };
+type EventEffect =
+  | { kind: "spent"; amount: number; taskIndex: number }
+  | { kind: "budget"; amount: number }
+  | { kind: "progress"; amount: number; taskIndex: number }
+  | { kind: "time"; weeks: number }
+  | { kind: "speed"; amount: number; personIndex: number }
+  | { kind: "absence"; personIndex: number; weeks: number };
+
+type EventChoice = {
+  id: string;
+  title: string;
+  description: string;
+  outcome: string;
+  tag: string;
+  tone: EventTone;
+  effects: EventEffect[];
+};
+
+type EventDefinition = {
+  id: string;
+  title: string;
+  text: string;
+  icon: string;
+  tone: EventTone;
+  choices: EventChoice[];
+};
+
+type EventHistoryItem = {
+  week: number;
+  eventId: string;
+  title: string;
+  icon: string;
+  choiceId: string;
+  choiceTitle: string;
+  outcome: string;
+  tone: EventTone;
+  effects: EventEffect[];
+};
 
 type GameState = {
   status: GameStatus;
@@ -45,6 +80,8 @@ type GameState = {
   failureReason: FailureReason;
   pendingEvent: EventDefinition | null;
   eventHistory: EventHistoryItem[];
+  overloadByPerson: number[];
+  assignmentChanges: number;
 };
 
 const TICK = 0.25;
@@ -60,7 +97,17 @@ function freshGame(seed = 0, previous?: GameState): GameState {
     team: scenario.team,
     tasks: scenario.tasks,
     assignments: scenario.tasks.map(() => null),
-    taskState: scenario.tasks.map(() => ({ progress: 0, spent: 0 })),
+    taskState: scenario.tasks.map(() => ({
+      progress: 0,
+      spent: 0,
+      startedAt: null,
+      completedAt: null,
+      blockedWeeks: 0,
+      overloadWeeks: 0,
+      unassignedWeeks: 0,
+      eventProgress: 0,
+      eventCost: 0,
+    })),
     nextEventWeek: 3,
     eventCount: 0,
     boostUntil: 0,
@@ -70,6 +117,8 @@ function freshGame(seed = 0, previous?: GameState): GameState {
     failureReason: null,
     pendingEvent: null,
     eventHistory: [],
+    overloadByPerson: scenario.team.map(() => 0),
+    assignmentChanges: 0,
   };
 }
 
@@ -82,93 +131,174 @@ function scoreFor(game: GameState) {
   return Math.max(0, Math.round(completed * 1_000 + Math.max(0, game.budget - game.spent)));
 }
 
-function chooseEvent(current: GameState) {
-  const incomplete = current.tasks.map((_, index) => index).filter((index) => !isTaskComplete(current.taskState[index].progress));
-  const active = incomplete.filter((index) => current.week >= current.tasks[index].start && dependenciesComplete(current.tasks, current.taskState, index));
-  const unstarted = incomplete.filter((index) => current.taskState[index].progress < 1);
-  const targetTask = (active.length ? active : incomplete)[Math.floor(Math.random() * (active.length || incomplete.length))];
-  const waitingTask = unstarted[Math.floor(Math.random() * Math.max(1, unstarted.length))];
-  const targetPerson = Math.floor(Math.random() * current.team.length);
-  const person = current.team[targetPerson];
-  const options: EventDefinition[] = [
-    { title: "Руководство выделило резерв", text: "У проекта появился дополнительный запас на непредвиденные работы.", effect: "+500 тыс. ₽ к бюджету проекта", icon: "+", kind: "budget", tone: "good", value: 500 },
-    { title: "Команда поймала рабочий ритм", text: "На несколько недель специалисты работают заметно быстрее.", effect: "+28% к скорости всей команды на 3 недели", icon: "↗", kind: "boost", tone: "good", value: 3 },
-    { title: `${person.name} прошёл интенсив`, text: "Обучение дало постоянный прирост производительности.", effect: `${person.name}: скорость +0,22× до конца проекта`, icon: "↑", kind: "training", tone: "good", value: 0.22, targetPerson },
-    { title: `Ставка ${person.name} снижена`, text: "Удалось пересмотреть условия участия специалиста в проекте.", effect: `${person.name}: стоимость −40 тыс. ₽/нед.`, icon: "₽", kind: "discount", tone: "good", value: 40, targetPerson },
-    { title: `${person.name} временно недоступен`, text: "Специалист выпадает из работы. Его активные задачи остановятся, но исполнителя можно заменить.", effect: `${person.name} не работает 2 недели`, icon: "!", kind: "absence", tone: "bad", value: 2, targetPerson },
-  ];
-
-  if (targetTask !== undefined) {
-    options.push(
-      { title: `Прорыв: «${current.tasks[targetTask].short}»`, text: "Команда нашла решение и закрыла большой кусок работы раньше ожиданий.", effect: `+35% к задаче «${current.tasks[targetTask].short}»`, icon: "✓", kind: "task-progress", tone: "good", value: 35, targetTask },
-      { title: `Переделка: «${current.tasks[targetTask].short}»`, text: "Заказчик уточнил требования, и часть результата приходится пересобрать.", effect: `−12% у задачи «${current.tasks[targetTask].short}»`, icon: "↺", kind: "task-setback", tone: "bad", value: 12, targetTask },
-      { title: `Подорожала задача «${current.tasks[targetTask].short}»`, text: "Внешние сервисы и подрядчики увеличили фактическую стоимость работы.", effect: `+320 тыс. ₽ к расходам задачи`, icon: "₽", kind: "task-cost", tone: "bad", value: 320, targetTask },
-    );
-  }
-  if (waitingTask !== undefined) {
-    options.push({ title: `Помощь смежной команды`, text: `Другой отдел полностью берёт на себя этап «${current.tasks[waitingTask].short}».`, effect: `задача «${current.tasks[waitingTask].short}» завершена за 72% плановой цены`, icon: "◆", kind: "assist", tone: "good", value: 0.72, targetTask: waitingTask });
-  }
-  if (current.timeScale === 1) {
-    options.push({ title: "Заказчик дал больше времени на решения", text: "Календарная линия движется медленнее, пока команда продолжает работать в обычном темпе.", effect: "ход времени замедлен на 35% до конца проекта", icon: "◷", kind: "slow-time", tone: "good", value: 0.65 });
-  }
-
-  const previousKind = current.eventHistory.at(-1)?.kind;
-  const available = options.filter((event) => event.kind !== previousKind);
-  return available[Math.floor(Math.random() * available.length)];
+function deterministicRandom(seed: number, salt: number) {
+  let value = (seed ^ Math.imul(salt + 1, 0x9e3779b1)) >>> 0;
+  value ^= value >>> 16;
+  value = Math.imul(value, 0x7feb352d);
+  value ^= value >>> 15;
+  value = Math.imul(value, 0x846ca68b);
+  value ^= value >>> 16;
+  return (value >>> 0) / 4_294_967_296;
 }
 
-function applyEvent(current: GameState, event: EventDefinition): GameState {
+function chooseEvent(current: GameState): EventDefinition {
+  const incomplete = current.tasks.map((_, index) => index).filter((index) => !isTaskComplete(current.taskState[index].progress));
+  const active = incomplete.filter((index) => isTaskActive(current.tasks, current.taskState, index, current.week));
+  const taskPool = active.length ? active : incomplete;
+  const targetTask = taskPool[Math.floor(deterministicRandom(current.seed, 100 + current.eventCount) * taskPool.length)];
+  const task = current.tasks[targetTask];
+  const assignedPerson = current.assignments[targetTask];
+  const targetPerson = assignedPerson ?? Math.floor(deterministicRandom(current.seed, 200 + current.eventCount) * current.team.length);
+  const person = current.team[targetPerson];
+  const family = ((current.seed % 6) + current.eventCount * 5) % 6;
+  const eventId = `event-${family}-${current.eventCount}`;
+
+  const events: EventDefinition[] = [
+    {
+      id: eventId,
+      title: `Заказчик уточнил требования к «${task.short}»`,
+      text: "Объём работ изменился уже после старта. Выбери, чем пожертвовать: готовностью, деньгами или запасом бюджета.",
+      icon: "↺",
+      tone: "mixed",
+      choices: [
+        { id: "rework", title: "Переделать своими силами", description: "Команда разбирает изменения без внешних расходов.", outcome: `«${task.short}»: −14% прогресса`, tag: "БЕЗ РАСХОДОВ", tone: "bad", effects: [{ kind: "progress", amount: -14, taskIndex: targetTask }] },
+        { id: "expert", title: "Позвать эксперта", description: "Эксперт сохранит почти весь результат, но увеличит расходы.", outcome: `+${money(300)} расходов · «${task.short}»: −3%`, tag: "+300 ТЫС. ₽", tone: "mixed", effects: [{ kind: "spent", amount: 300, taskIndex: targetTask }, { kind: "progress", amount: -3, taskIndex: targetTask }] },
+        { id: "scope", title: "Сократить объём релиза", description: "Задача станет ближе к завершению, но спонсор урежет лимит.", outcome: `«${task.short}»: +12% · бюджет −${money(480)}`, tag: "МЕНЬШЕ ОБЪЁМ", tone: "mixed", effects: [{ kind: "progress", amount: 12, taskIndex: targetTask }, { kind: "budget", amount: -480 }] },
+      ],
+    },
+    {
+      id: eventId,
+      title: `${person.name} временно недоступен`,
+      text: `Исполнитель задачи «${task.short}» выпадает из работы. Можно ждать, платить за помощь или принять переделку при передаче.`,
+      icon: "!",
+      tone: "mixed",
+      choices: [
+        { id: "wait", title: "Дождаться возвращения", description: "Сотрудник вернётся сам, но пока его задачи не движутся.", outcome: `${person.name} не работает 1,25 недели`, tag: "ПОТЕРЯ ВРЕМЕНИ", tone: "bad", effects: [{ kind: "absence", personIndex: targetPerson, weeks: 1.25 }] },
+        { id: "contractor", title: "Подключить подрядчика", description: "Работа продолжится сразу и получит небольшой рывок.", outcome: `+${money(400)} расходов · «${task.short}»: +8%`, tag: "+400 ТЫС. ₽", tone: "mixed", effects: [{ kind: "spent", amount: 400, taskIndex: targetTask }, { kind: "progress", amount: 8, taskIndex: targetTask }] },
+        { id: "handoff", title: "Передать задачу команде", description: "Новый исполнитель сможет работать, но погружение съест часть результата.", outcome: `«${task.short}»: −8% прогресса`, tag: "НУЖНА ЗАМЕНА", tone: "mixed", effects: [{ kind: "progress", amount: -8, taskIndex: targetTask }] },
+      ],
+    },
+    {
+      id: eventId,
+      title: `Обнаружен дефект в задаче «${task.short}»`,
+      text: "Проблему можно исправить глубоко, вынести наружу или временно обойти. Каждое решение оставит свой след.",
+      icon: "◇",
+      tone: "mixed",
+      choices: [
+        { id: "proper-fix", title: "Исправить основательно", description: "Часть работы придётся повторить, зато специалист усилит экспертизу.", outcome: `«${task.short}»: −12% · ${person.name}: +0,08×`, tag: "КАЧЕСТВО", tone: "mixed", effects: [{ kind: "progress", amount: -12, taskIndex: targetTask }, { kind: "speed", amount: 0.08, personIndex: targetPerson }] },
+        { id: "audit", title: "Заказать технический аудит", description: "Внешняя проверка локализует проблему с небольшой переделкой.", outcome: `+${money(300)} расходов · «${task.short}»: −3%`, tag: "+300 ТЫС. ₽", tone: "mixed", effects: [{ kind: "spent", amount: 300, taskIndex: targetTask }, { kind: "progress", amount: -3, taskIndex: targetTask }] },
+        { id: "workaround", title: "Сделать временный обход", description: "Прогресс появится сейчас, но дальнейшая работа замедлится.", outcome: `«${task.short}»: +8% · ${person.name}: −0,15×`, tag: "БЫСТРО СЕЙЧАС", tone: "mixed", effects: [{ kind: "progress", amount: 8, taskIndex: targetTask }, { kind: "speed", amount: -0.15, personIndex: targetPerson }] },
+      ],
+    },
+    {
+      id: eventId,
+      title: "Заказчик потребовал срочную демонстрацию",
+      text: `Нужно показать результат по этапу «${task.short}». Выбери между календарём, деньгами и сокращённым показом.`,
+      icon: "▶",
+      tone: "mixed",
+      choices: [
+        { id: "manual-demo", title: "Подготовить вручную", description: "Команда отвлечётся на демонстрацию без дополнительных расходов.", outcome: "календарь проекта +0,75 недели", tag: "+0,75 НЕД.", tone: "bad", effects: [{ kind: "time", weeks: 0.75 }] },
+        { id: "night-sprint", title: "Оплатить ночной спринт", description: "Демо будет готово, но специалист немного потеряет темп.", outcome: `+${money(260)} · «${task.short}»: +8% · ${person.name}: −0,07×`, tag: "+260 ТЫС. ₽", tone: "mixed", effects: [{ kind: "spent", amount: 260, taskIndex: targetTask }, { kind: "progress", amount: 8, taskIndex: targetTask }, { kind: "speed", amount: -0.07, personIndex: targetPerson }] },
+        { id: "small-demo", title: "Показать сокращённую версию", description: "Готовность вырастет, но заказчик уменьшит доступный бюджет.", outcome: `«${task.short}»: +14% · бюджет −${money(380)}`, tag: "МЕНЬШЕ БЮДЖЕТ", tone: "mixed", effects: [{ kind: "progress", amount: 14, taskIndex: targetTask }, { kind: "budget", amount: -380 }] },
+      ],
+    },
+    {
+      id: eventId,
+      title: `Внешний сервис для «${task.short}» недоступен`,
+      text: "Можно дождаться восстановления, перейти на платный резерв или построить временный обход внутри команды.",
+      icon: "×",
+      tone: "mixed",
+      choices: [
+        { id: "service-wait", title: "Ждать восстановления", description: "Денег не потребуется, но календарь продолжит идти.", outcome: "календарь проекта +0,9 недели", tag: "+0,9 НЕД.", tone: "bad", effects: [{ kind: "time", weeks: 0.9 }] },
+        { id: "reserve-service", title: "Перейти на резервный сервис", description: "Платная замена позволит сразу продолжить работу.", outcome: `+${money(320)} расходов · «${task.short}»: +4%`, tag: "+320 ТЫС. ₽", tone: "mixed", effects: [{ kind: "spent", amount: 320, taskIndex: targetTask }, { kind: "progress", amount: 4, taskIndex: targetTask }] },
+        { id: "internal-workaround", title: "Собрать обход внутри команды", description: "Без денег и паузы, но часть работы придётся повторить.", outcome: `«${task.short}»: −9% · ${person.name}: −0,05×`, tag: "БЕЗ РАСХОДОВ", tone: "mixed", effects: [{ kind: "progress", amount: -9, taskIndex: targetTask }, { kind: "speed", amount: -0.05, personIndex: targetPerson }] },
+      ],
+    },
+    {
+      id: eventId,
+      title: `Появился инструмент автоматизации для «${task.short}»`,
+      text: "Инструмент обещает ускорение, но его можно купить, сначала изучить или испытать прямо на текущей задаче.",
+      icon: "✦",
+      tone: "mixed",
+      choices: [
+        { id: "license", title: "Купить лицензию", description: "Предсказуемый прирост без изменения навыков команды.", outcome: `+${money(300)} расходов · «${task.short}»: +15%`, tag: "+300 ТЫС. ₽", tone: "mixed", effects: [{ kind: "spent", amount: 300, taskIndex: targetTask }, { kind: "progress", amount: 15, taskIndex: targetTask }] },
+        { id: "learn", title: "Сначала обучить специалиста", description: "Освоение отнимет время, но скорость сохранится до конца проекта.", outcome: `календарь +0,75 недели · ${person.name}: +0,18×`, tag: "ИНВЕСТИЦИЯ", tone: "mixed", effects: [{ kind: "time", weeks: 0.75 }, { kind: "speed", amount: 0.18, personIndex: targetPerson }] },
+        { id: "experiment", title: "Испытать прямо в проекте", description: "Получим быстрый результат, но процесс станет чуть менее стабильным.", outcome: `«${task.short}»: +7% · ${person.name}: −0,05×`, tag: "ЭКСПЕРИМЕНТ", tone: "mixed", effects: [{ kind: "progress", amount: 7, taskIndex: targetTask }, { kind: "speed", amount: -0.05, personIndex: targetPerson }] },
+      ],
+    },
+  ];
+
+  return events[family];
+}
+
+function resolveEventChoice(current: GameState, choice: EventChoice): GameState {
   let budget = current.budget;
   let spent = current.spent;
-  let boostUntil = current.boostUntil;
   let absentPerson = current.absentPerson;
   let absentUntil = current.absentUntil;
-  let timeScale = current.timeScale;
+  let week = current.week;
   let taskState = current.taskState;
   let team = current.team;
 
-  if (event.kind === "budget") budget += event.value;
-  if (event.kind === "boost") boostUntil = current.week + event.value;
-  if (event.kind === "slow-time") timeScale = event.value;
-  if (event.kind === "absence") {
-    absentPerson = event.targetPerson ?? 0;
-    absentUntil = current.week + event.value;
-  }
-  if (event.kind === "training" && event.targetPerson !== undefined) {
-    team = current.team.map((person, index) => index === event.targetPerson ? { ...person, speed: person.speed + event.value } : person);
-  }
-  if (event.kind === "discount" && event.targetPerson !== undefined) {
-    team = current.team.map((person, index) => index === event.targetPerson ? { ...person, cost: Math.max(90, person.cost - event.value) } : person);
-  }
-  if (event.targetTask !== undefined && event.kind === "task-progress") {
-    taskState = current.taskState.map((state, index) => index === event.targetTask ? { ...state, progress: Math.min(100, state.progress + event.value) } : state);
-  }
-  if (event.targetTask !== undefined && event.kind === "task-setback") {
-    taskState = current.taskState.map((state, index) => index === event.targetTask ? { ...state, progress: Math.max(0, state.progress - event.value) } : state);
-  }
-  if (event.targetTask !== undefined && event.kind === "task-cost") {
-    spent += event.value;
-    taskState = current.taskState.map((state, index) => index === event.targetTask ? { ...state, spent: state.spent + event.value } : state);
-  }
-  if (event.targetTask !== undefined && event.kind === "assist") {
-    const addedCost = current.tasks[event.targetTask].budget * event.value;
-    spent += addedCost;
-    taskState = current.taskState.map((state, index) => index === event.targetTask ? { progress: 100, spent: state.spent + addedCost } : state);
-  }
+  choice.effects.forEach((effect) => {
+    if (effect.kind === "budget") budget = Math.max(0, budget + effect.amount);
+    if (effect.kind === "time") week = Math.min(DEADLINE, week + effect.weeks);
+    if (effect.kind === "absence") {
+      absentPerson = effect.personIndex;
+      absentUntil = Math.max(absentUntil, week + effect.weeks);
+    }
+    if (effect.kind === "speed") {
+      team = team.map((person, index) => index === effect.personIndex ? { ...person, speed: Math.min(1.75, Math.max(0.55, person.speed + effect.amount)) } : person);
+    }
+    if (effect.kind === "spent") {
+      spent += effect.amount;
+      taskState = taskState.map((state, index) => index === effect.taskIndex ? { ...state, spent: state.spent + effect.amount, eventCost: state.eventCost + effect.amount } : state);
+    }
+    if (effect.kind === "progress") {
+      taskState = taskState.map((state, index) => {
+        if (index !== effect.taskIndex) return state;
+        const progress = Math.min(100, Math.max(0, state.progress + effect.amount));
+        return {
+          ...state,
+          progress,
+          startedAt: state.startedAt ?? (progress > 0 ? week : null),
+          completedAt: state.completedAt ?? (isTaskComplete(progress) ? week : null),
+          eventProgress: state.eventProgress + effect.amount,
+        };
+      });
+    }
+  });
+
+  const pendingEvent = current.pendingEvent;
+  if (!pendingEvent) return current;
+  const eventHistory = [...current.eventHistory, {
+    week: current.week,
+    eventId: pendingEvent.id,
+    title: pendingEvent.title,
+    icon: pendingEvent.icon,
+    choiceId: choice.id,
+    choiceTitle: choice.title,
+    outcome: choice.outcome,
+    tone: choice.tone,
+    effects: choice.effects,
+  }];
+  const complete = taskState.every((task) => isTaskComplete(task.progress));
+  const status: GameStatus = complete ? (spent <= budget ? "won" : "lost") : week >= DEADLINE ? "lost" : "paused";
+  const failureReason: FailureReason = status !== "lost" ? null : complete ? "budget" : spent > budget ? "both" : "deadline";
 
   return {
     ...current,
-    status: "paused",
+    status,
+    failureReason,
+    week,
     budget,
     spent,
-    boostUntil,
     absentPerson,
     absentUntil,
-    timeScale,
     team,
     taskState,
-    pendingEvent: event,
-    eventHistory: [...current.eventHistory, { ...event, week: current.week }],
+    pendingEvent: null,
+    eventHistory,
   };
 }
 
@@ -227,6 +357,7 @@ export default function ProjectGame() {
       setGame((current) => {
         if (current.status !== "running") return current;
         const nextWeek = Math.min(DEADLINE, current.week + TICK * current.timeScale);
+        const elapsedWeeks = nextWeek - current.week;
         let nextSpent = current.spent;
         const activeAssignments = new Map<number, number>();
 
@@ -237,46 +368,71 @@ export default function ProjectGame() {
           }
         });
 
+        const nextOverloadByPerson = current.overloadByPerson.map((weeks, index) => (
+          weeks + ((activeAssignments.get(index) || 0) > 1 ? elapsedWeeks : 0)
+        ));
+
         const nextTasks = current.taskState.map((state, index) => {
           const task = current.tasks[index];
           const personIndex = current.assignments[index];
-          if (!isTaskActive(current.tasks, current.taskState, index, current.week) || personIndex === null) return state;
+          const active = isTaskActive(current.tasks, current.taskState, index, current.week);
+          const blocked = current.week >= task.start
+            && !dependenciesComplete(current.tasks, current.taskState, index)
+            && !isTaskComplete(state.progress);
+          const telemetry = {
+            blockedWeeks: state.blockedWeeks + (blocked ? elapsedWeeks : 0),
+            unassignedWeeks: state.unassignedWeeks + (active && personIndex === null ? elapsedWeeks : 0),
+            overloadWeeks: state.overloadWeeks + (active && personIndex !== null && (activeAssignments.get(personIndex) || 0) > 1 ? elapsedWeeks : 0),
+          };
+          if (!active || personIndex === null) return { ...state, ...telemetry };
           const person = current.team[personIndex];
           const overloaded = (activeAssignments.get(personIndex) || 0) > 1;
           const absent = current.absentPerson === personIndex && current.absentUntil > current.week;
           const boost = current.boostUntil > current.week ? 1.28 : 1;
-          const stochasticStep = Math.random() < 0.34 ? 0.72 : 1.14;
+          const tickIndex = Math.round(current.week / TICK);
+          const stochasticStep = deterministicRandom(current.seed, 10_000 + tickIndex * 31 + index) < 0.34 ? 0.72 : 1.14;
           const progressGain = absent ? 0 : (100 / task.effort) * person.speed * (overloaded ? 0.32 : 1) * boost * stochasticStep * TICK;
           const costGain = absent ? 0 : person.cost * (progressGain / 100) * task.effort / person.speed;
+          const progress = Math.min(100, state.progress + progressGain);
           nextSpent += costGain;
-          return { progress: Math.min(100, state.progress + progressGain), spent: state.spent + costGain };
+          return {
+            ...state,
+            ...telemetry,
+            progress,
+            spent: state.spent + costGain,
+            startedAt: state.startedAt ?? (progressGain > 0 ? current.week : null),
+            completedAt: state.completedAt ?? (isTaskComplete(progress) ? nextWeek : null),
+          };
         });
 
         const complete = nextTasks.every((task) => isTaskComplete(task.progress));
         if (complete) {
           const won = nextSpent <= current.budget;
-          return { ...current, status: won ? "won" : "lost", failureReason: won ? null : "budget", week: nextWeek, spent: nextSpent, taskState: nextTasks };
+          return { ...current, status: won ? "won" : "lost", failureReason: won ? null : "budget", week: nextWeek, spent: nextSpent, taskState: nextTasks, overloadByPerson: nextOverloadByPerson };
         }
 
         const eventDue = current.eventCount < MAX_EVENTS && nextWeek >= current.nextEventWeek;
         if (eventDue) {
           const event = chooseEvent({ ...current, week: nextWeek, spent: nextSpent, taskState: nextTasks });
-          return applyEvent({
+          return {
             ...current,
+            status: "paused",
             week: nextWeek,
             spent: nextSpent,
             taskState: nextTasks,
             eventCount: current.eventCount + 1,
-            nextEventWeek: nextWeek + 3.5 + Math.random() * 1.5,
-          }, event);
+            nextEventWeek: nextWeek + 3.5 + deterministicRandom(current.seed, 20_000 + current.eventCount) * 1.5,
+            pendingEvent: event,
+            overloadByPerson: nextOverloadByPerson,
+          };
         }
 
         if (nextWeek >= DEADLINE) {
           const overBudget = nextSpent > current.budget;
-          return { ...current, status: "lost", failureReason: overBudget ? "both" : "deadline", week: DEADLINE, spent: nextSpent, taskState: nextTasks };
+          return { ...current, status: "lost", failureReason: overBudget ? "both" : "deadline", week: DEADLINE, spent: nextSpent, taskState: nextTasks, overloadByPerson: nextOverloadByPerson };
         }
 
-        return { ...current, week: nextWeek, spent: nextSpent, taskState: nextTasks };
+        return { ...current, week: nextWeek, spent: nextSpent, taskState: nextTasks, overloadByPerson: nextOverloadByPerson };
       });
     }, 420);
     return () => window.clearInterval(timer);
@@ -325,12 +481,67 @@ export default function ProjectGame() {
   const overallProgress = game.taskState.reduce((sum, task) => sum + task.progress, 0) / game.tasks.length;
   const isFinished = game.status === "won" || game.status === "lost";
   const allTasksAssigned = unassignedTasks === 0;
+  const debrief = useMemo(() => {
+    const unfinished = game.taskState
+      .map((state, index) => ({ state, index }))
+      .filter(({ state }) => !isTaskComplete(state.progress));
+    const bottleneck = unfinished.length > 0
+      ? unfinished.sort((a, b) => (100 - b.state.progress) - (100 - a.state.progress) || b.state.blockedWeeks - a.state.blockedWeeks)[0]
+      : game.taskState
+          .map((state, index) => ({ state, index, delay: Math.max(0, (state.completedAt ?? game.week) - game.tasks[index].end) }))
+          .sort((a, b) => b.delay - a.delay || b.state.overloadWeeks - a.state.overloadWeeks)[0];
+    const bottleneckTask = game.tasks[bottleneck.index];
+    const bottleneckState = game.taskState[bottleneck.index];
+    const budgetRows = game.tasks.map((task, index) => ({ task, state: game.taskState[index], variance: game.taskState[index].spent - task.budget }));
+    const worstBudget = [...budgetRows].sort((a, b) => b.variance - a.variance)[0];
+    const overloadedPersonIndex = game.overloadByPerson.reduce((best, weeks, index, all) => weeks > all[best] ? index : best, 0);
+    const overloadWeeks = game.overloadByPerson[overloadedPersonIndex] || 0;
+    const totalBlockedWeeks = game.taskState.reduce((sum, state) => sum + state.blockedWeeks, 0);
+    const totalUnassignedWeeks = game.taskState.reduce((sum, state) => sum + state.unassignedWeeks, 0);
+    const delay = Math.max(0, (bottleneckState.completedAt ?? game.week) - bottleneckTask.end);
+    const bottleneckReason = !isTaskComplete(bottleneckState.progress)
+      ? bottleneckState.blockedWeeks > 0.25
+        ? `Задача ждала зависимость ${bottleneckState.blockedWeeks.toFixed(1)} нед.`
+        : bottleneckState.overloadWeeks > 0.25
+          ? `Исполнитель был перегружен ${bottleneckState.overloadWeeks.toFixed(1)} нед.`
+          : `К финалу осталось ${Math.round(100 - bottleneckState.progress)}% работы.`
+      : delay > 0.1
+        ? `Завершена на ${delay.toFixed(1)} нед. позже собственного плана.`
+        : "Самый маленький резерв среди завершённых задач.";
+    let recommendation = "Переиграй тот же сценарий и попробуй закончить с большим запасом по сроку и бюджету.";
+    if (overloadWeeks > 0.25) {
+      recommendation = `Разнеси параллельные задачи: ${game.team[overloadedPersonIndex].name} работал одновременно на нескольких этапах ${overloadWeeks.toFixed(1)} нед.`;
+    } else if (totalUnassignedWeeks > 0.25) {
+      recommendation = `Не оставляй начавшиеся задачи без исполнителя: так потеряно ${totalUnassignedWeeks.toFixed(1)} нед. работы.`;
+    } else if (totalBlockedWeeks > 0.25 && bottleneckTask.dependsOn.length > 0) {
+      const parent = game.tasks[bottleneckTask.dependsOn[0]];
+      recommendation = `Ускорь этап «${parent.short}»: от него зависит «${bottleneckTask.short}», а ожидание съело резерв графика.`;
+    } else if (game.spent > game.budget) {
+      recommendation = `На некритических задачах выбирай более выгодное соотношение цены и скорости. Главный перерасход — «${worstBudget.task.short}».`;
+    } else if (game.eventHistory.some((event) => event.effects.some((effect) => effect.kind === "spent"))) {
+      recommendation = "Сравни варианты событий: дорогая реакция ускоряет работу, но может лишить проект последнего бюджетного резерва.";
+    }
+
+    return {
+      bottleneckTask,
+      bottleneckReason,
+      worstBudget,
+      overloadWeeks,
+      overloadedPerson: game.team[overloadedPersonIndex],
+      totalBlockedWeeks,
+      totalUnassignedWeeks,
+      lateTasks: game.tasks.filter((task, index) => !isTaskComplete(game.taskState[index].progress) || (game.taskState[index].completedAt ?? DEADLINE) > task.end + 0.01).length,
+      recommendation,
+    };
+  }, [game]);
 
   function assign(taskIndex: number, value: string) {
     setGame((current) => {
       const assignments = [...current.assignments];
-      assignments[taskIndex] = value === "" ? null : Number(value);
-      return { ...current, assignments };
+      const nextAssignment = value === "" ? null : Number(value);
+      const changedDuringRun = current.status !== "ready" && assignments[taskIndex] !== nextAssignment;
+      assignments[taskIndex] = nextAssignment;
+      return { ...current, assignments, assignmentChanges: current.assignmentChanges + (changedDuringRun ? 1 : 0) };
     });
   }
 
@@ -341,7 +552,8 @@ export default function ProjectGame() {
       return;
     }
     setGame((current) => {
-      if (current.status === "ready" || current.status === "paused") return { ...current, status: "running", pendingEvent: null };
+      if (current.pendingEvent) return current;
+      if (current.status === "ready" || current.status === "paused") return { ...current, status: "running" };
       if (current.status === "running") return { ...current, status: "paused" };
       return current;
     });
@@ -352,8 +564,16 @@ export default function ProjectGame() {
     setGame((current) => freshGame(nextSeed(), current));
   }
 
-  function acknowledgeEvent() {
-    setGame((current) => ({ ...current, status: "paused", pendingEvent: null }));
+  function replayScenario() {
+    setShowStartWarning(false);
+    setGame((current) => freshGame(current.seed));
+  }
+
+  function chooseEventOption(choiceId: string) {
+    setGame((current) => {
+      const choice = current.pendingEvent?.choices.find((option) => option.id === choiceId);
+      return choice ? resolveEventChoice(current, choice) : current;
+    });
   }
 
   return (
@@ -532,10 +752,10 @@ export default function ProjectGame() {
       </section>
 
       <section className="event-log" aria-label="Журнал случайных событий">
-        <div><p className="section-kicker">РИСКИ ПРОЕКТА</p><h2>Случайные события</h2><span>Во время симуляции произойдёт до {MAX_EVENTS} событий. Игра сама остановится, чтобы ты успел понять последствия и изменить план.</span></div>
+        <div><p className="section-kicker">РИСКИ ПРОЕКТА</p><h2>Случайные события</h2><span>Во время симуляции произойдёт до {MAX_EVENTS} событий. Игра остановится и предложит несколько решений — выбери подходящий компромисс.</span></div>
         <div className="event-log-list">
           {game.eventHistory.length === 0 && <p className="empty-log">Первое событие ожидается около 3-й недели.</p>}
-          {game.eventHistory.slice().reverse().map((event, index) => <article className={event.tone} key={`${event.title}-${index}`}><b>{event.icon}</b><div><span>Неделя {Math.ceil(event.week)}</span><strong>{event.title}</strong><small>{event.effect}</small></div></article>)}
+          {game.eventHistory.slice().reverse().map((event, index) => <article className={event.tone} key={`${event.eventId}-${index}`}><b>{event.icon}</b><div><span>Неделя {Math.ceil(event.week)} · {event.choiceTitle}</span><strong>{event.title}</strong><small>{event.outcome}</small></div></article>)}
         </div>
       </section>
 
@@ -543,7 +763,21 @@ export default function ProjectGame() {
 
       {game.pendingEvent && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="event-title">
-          <div className={`event-modal ${game.pendingEvent.tone}`}><span className="event-spark">{game.pendingEvent.icon}</span><p>СЛУЧАЙНОЕ СОБЫТИЕ · НЕДЕЛЯ {Math.ceil(game.week)}</p><h2 id="event-title">{game.pendingEvent.title}</h2><span className="event-explanation">{game.pendingEvent.text}</span><strong>{game.pendingEvent.effect}</strong><button onClick={acknowledgeEvent}>Закрыть и изменить план →</button><small>Игра останется на паузе. При необходимости поменяй исполнителей, затем нажми «Продолжить».</small></div>
+          <div className={`event-modal ${game.pendingEvent.tone}`}>
+            <span className="event-spark">{game.pendingEvent.icon}</span>
+            <p>СЛУЧАЙНОЕ СОБЫТИЕ · НЕДЕЛЯ {Math.ceil(game.week)}</p>
+            <h2 id="event-title">{game.pendingEvent.title}</h2>
+            <span className="event-explanation">{game.pendingEvent.text}</span>
+            <div className="event-choice-list">
+              {game.pendingEvent.choices.map((choice) => (
+                <button className="event-choice" onClick={() => chooseEventOption(choice.id)} key={choice.id}>
+                  <span className="event-choice-copy"><b>{choice.title}</b><small>{choice.description}</small><span>{choice.outcome}</span></span>
+                  <span className="event-choice-tag">{choice.tag}</span>
+                </button>
+              ))}
+            </div>
+            <small>Выбор применится сразу, а игра останется на паузе. После этого можно изменить назначения и продолжить.</small>
+          </div>
         </div>
       )}
 
@@ -561,12 +795,42 @@ export default function ProjectGame() {
 
       {isFinished && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="result-title">
-          <div className={`result-modal ${game.status}`}>
+          <div className={`result-modal debrief-modal ${game.status}`}>
             <span className="result-icon">{game.status === "won" ? "✓" : "!"}</span>
-            <p>{game.status === "won" ? "МИССИЯ ВЫПОЛНЕНА" : "ПРОЕКТ НЕ СДАН"}</p>
+            <p>ПОСЛЕМАТЧЕВЫЙ РАЗБОР · {game.status === "won" ? "МИССИЯ ВЫПОЛНЕНА" : "ПРОЕКТ НЕ СДАН"}</p>
             <h2 id="result-title">{game.status === "won" ? "Релиз состоялся!" : game.failureReason === "budget" ? "Проект вышел за бюджет" : game.failureReason === "both" ? "Срок и бюджет нарушены" : "Дедлайн оказался быстрее"}</h2>
-            <div className="result-stats"><span><b>{completedCount}/{game.tasks.length}</b>задач</span><span><b>{money(game.budget - game.spent)}</b>остаток</span><span><b>{game.eventCount}</b>событий</span></div>
-            <button onClick={startFreshProject}>Сыграть ещё раз →</button>
+            <div className="debrief-grid">
+              <article className="debrief-card">
+                <span className="debrief-label">УЗКОЕ МЕСТО</span>
+                <strong className="debrief-value">{debrief.bottleneckTask.short}</strong>
+                <p className="debrief-copy">{debrief.bottleneckReason}</p>
+              </article>
+              <article className="debrief-card">
+                <span className="debrief-label">ГРАФИК</span>
+                <strong className="debrief-value">{completedCount}/{game.tasks.length} задач · неделя {game.week.toFixed(1)}</strong>
+                <p className="debrief-copy">{debrief.lateTasks > 0 ? `С планом не совпали ${debrief.lateTasks} задач.` : "Все задачи завершались в пределах своего плана."} Ожидание зависимостей: {debrief.totalBlockedWeeks.toFixed(1)} нед.</p>
+              </article>
+              <article className="debrief-card">
+                <span className="debrief-label">БЮДЖЕТ</span>
+                <strong className="debrief-value">{game.spent <= game.budget ? `Резерв ${money(game.budget - game.spent)}` : `Перерасход ${money(game.spent - game.budget)}`}</strong>
+                <p className="debrief-copy">Наибольшее отклонение: «{debrief.worstBudget.task.short}» — {debrief.worstBudget.variance > 0 ? "+" : ""}{money(debrief.worstBudget.variance)}.</p>
+              </article>
+              <article className="debrief-card">
+                <span className="debrief-label">КОМАНДА</span>
+                <strong className="debrief-value">{debrief.overloadWeeks > 0 ? `${debrief.overloadedPerson.name}: ${debrief.overloadWeeks.toFixed(1)} нед.` : "Без перегрузки"}</strong>
+                <p className="debrief-copy">Переназначений после старта: {game.assignmentChanges}. Активные задачи без исполнителя: {debrief.totalUnassignedWeeks.toFixed(1)} нед.</p>
+              </article>
+              <article className="debrief-card full">
+                <span className="debrief-label">РЕШЕНИЯ В СОБЫТИЯХ</span>
+                <strong className="debrief-value">{game.eventHistory.length} из {game.eventCount} решений принято</strong>
+                <p className="debrief-copy">{game.eventHistory.length > 0 ? game.eventHistory.map((event) => `${event.choiceTitle}: ${event.outcome}`).join(" · ") : "Сценарий завершился до первого события."}</p>
+                <div className="debrief-tip">Следующий ход: {debrief.recommendation}</div>
+              </article>
+            </div>
+            <div className="result-actions">
+              <button className="replay-button" onClick={replayScenario}>↺ ПЕРЕИГРАТЬ СЦЕНАРИЙ</button>
+              <button onClick={startFreshProject}>НОВЫЙ ПРОЕКТ →</button>
+            </div>
           </div>
         </div>
       )}
@@ -591,7 +855,7 @@ export default function ProjectGame() {
               <li><span>01</span><div><b>Сначала назначь людей</b><p>В каждой строке задачи открой список и выбери сотрудника. Смотри на скорость и цену: быстрый специалист справится раньше, но стоит дороже.</p></div></li>
               <li><span>02</span><div><b>Запусти и следи за линиями</b><p>Голубая линия «Сейчас» показывает ход времени. Красная линия справа — неизменный финальный дедлайн. Цвет внутри полосы показывает реально выполненную часть.</p></div></li>
               <li><span>03</span><div><b>Учитывай зависимости и перегрузку</b><p>Подпись «после» показывает, какие этапы нужно закончить раньше. Если один человек ведёт две уже активные задачи, обе движутся намного медленнее.</p></div></li>
-              <li><span>04</span><div><b>Реагируй на случайности</b><p>Несколько раз игра остановится из-за события: согласование, переделка, дополнительные расходы или отсутствие сотрудника. Прочитай эффект и при необходимости перераспредели людей.</p></div></li>
+              <li><span>04</span><div><b>Принимай решения в событиях</b><p>Несколько раз игра остановится из-за риска и предложит 2–3 варианта. Сравни влияние на срок, бюджет, прогресс и команду, выбери один, затем при необходимости перераспредели людей.</p></div></li>
               <li><span>05</span><div><b>Победи по двум условиям</b><p>Заверши все задачи до 18-й недели и не превысь бюджет. В каждом новом проекте меняются люди, их параметры, количество задач, расписание и зависимости.</p></div></li>
             </ol>
             <div className="guide-legend"><span><i className="legend-progress" />цветная заливка — сделано</span><span><i className="legend-now" />голубая линия — сейчас</span><span><i className="legend-deadline" />красная линия — дедлайн</span></div>
