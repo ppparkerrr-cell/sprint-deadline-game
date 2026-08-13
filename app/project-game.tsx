@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import Image from "next/image";
-import { DEADLINE, dependenciesComplete, generateScenario } from "./game-scenario";
+import { DEADLINE, dependenciesComplete, generateScenario, isTaskActive, isTaskComplete } from "./game-scenario";
 import type { Person, ProjectTask } from "./game-scenario";
 
 type GameStatus = "ready" | "running" | "paused" | "won" | "lost";
@@ -78,12 +78,12 @@ function money(value: number) {
 }
 
 function scoreFor(game: GameState) {
-  const completed = game.taskState.filter((task) => task.progress >= 99.9).length;
+  const completed = game.taskState.filter((task) => isTaskComplete(task.progress)).length;
   return Math.max(0, Math.round(completed * 1_000 + Math.max(0, game.budget - game.spent)));
 }
 
 function chooseEvent(current: GameState) {
-  const incomplete = current.tasks.map((_, index) => index).filter((index) => current.taskState[index].progress < 99.9);
+  const incomplete = current.tasks.map((_, index) => index).filter((index) => !isTaskComplete(current.taskState[index].progress));
   const active = incomplete.filter((index) => current.week >= current.tasks[index].start && dependenciesComplete(current.tasks, current.taskState, index));
   const unstarted = incomplete.filter((index) => current.taskState[index].progress < 1);
   const targetTask = (active.length ? active : incomplete)[Math.floor(Math.random() * (active.length || incomplete.length))];
@@ -230,8 +230,8 @@ export default function ProjectGame() {
         let nextSpent = current.spent;
         const activeAssignments = new Map<number, number>();
 
-        current.tasks.forEach((task, index) => {
-          if (current.week >= task.start && dependenciesComplete(current.tasks, current.taskState, index) && current.taskState[index].progress < 100) {
+        current.tasks.forEach((_, index) => {
+          if (isTaskActive(current.tasks, current.taskState, index, current.week)) {
             const person = current.assignments[index];
             if (person !== null) activeAssignments.set(person, (activeAssignments.get(person) || 0) + 1);
           }
@@ -240,7 +240,7 @@ export default function ProjectGame() {
         const nextTasks = current.taskState.map((state, index) => {
           const task = current.tasks[index];
           const personIndex = current.assignments[index];
-          if (current.week < task.start || !dependenciesComplete(current.tasks, current.taskState, index) || state.progress >= 100 || personIndex === null) return state;
+          if (!isTaskActive(current.tasks, current.taskState, index, current.week) || personIndex === null) return state;
           const person = current.team[personIndex];
           const overloaded = (activeAssignments.get(personIndex) || 0) > 1;
           const absent = current.absentPerson === personIndex && current.absentUntil > current.week;
@@ -252,7 +252,7 @@ export default function ProjectGame() {
           return { progress: Math.min(100, state.progress + progressGain), spent: state.spent + costGain };
         });
 
-        const complete = nextTasks.every((task) => task.progress >= 99.9);
+        const complete = nextTasks.every((task) => isTaskComplete(task.progress));
         if (complete) {
           const won = nextSpent <= current.budget;
           return { ...current, status: won ? "won" : "lost", failureReason: won ? null : "budget", week: nextWeek, spent: nextSpent, taskState: nextTasks };
@@ -283,7 +283,7 @@ export default function ProjectGame() {
   }, [game.status]);
 
   const activeTasks = useMemo(
-    () => game.tasks.map((task, index) => ({ task, index })).filter(({ task, index }) => game.week >= task.start && dependenciesComplete(game.tasks, game.taskState, index) && game.taskState[index].progress < 100),
+    () => game.tasks.map((task, index) => ({ task, index })).filter(({ index }) => isTaskActive(game.tasks, game.taskState, index, game.week)),
     [game.week, game.tasks, game.taskState],
   );
 
@@ -299,7 +299,7 @@ export default function ProjectGame() {
   const plannedAssignmentCounts = useMemo(() => {
     const counts = new Map<number, number>();
     game.assignments.forEach((person, index) => {
-      if (person !== null && game.taskState[index].progress < 99.9) {
+      if (person !== null && !isTaskComplete(game.taskState[index].progress)) {
         counts.set(person, (counts.get(person) || 0) + 1);
       }
     });
@@ -315,15 +315,16 @@ export default function ProjectGame() {
     return sum + remaining * task.effort * (person.cost / person.speed);
   }, 0);
   const forecast = game.spent + remainingCost;
-  const completedCount = game.taskState.filter((task) => task.progress >= 99.9).length;
+  const completedCount = game.taskState.filter((task) => isTaskComplete(task.progress)).length;
   const unassignedActive = activeTasks.filter(({ index }) => game.assignments[index] === null).length;
-  const unassignedRemaining = game.assignments.filter((person, index) => person === null && game.taskState[index].progress < 99.9).length;
+  const unassignedTasks = game.assignments.filter((person) => person === null).length;
   const overloadedPeople = [...activeAssignmentCounts.entries()].filter(([, count]) => count > 1).map(([index]) => game.team[index]);
   const absentName = game.absentPerson !== null && game.absentUntil > game.week ? game.team[game.absentPerson].name : null;
-  const health = absentName ? `${absentName} недоступен` : overloadedPeople.length ? "Перегрузка" : unassignedRemaining ? `Не назначено: ${unassignedRemaining}` : forecast > game.budget ? "Риск бюджета" : "Всё по плану";
-  const healthTone = absentName || overloadedPeople.length || forecast > game.budget ? "danger" : unassignedRemaining ? "warning" : "good";
+  const health = absentName ? `${absentName} недоступен` : overloadedPeople.length ? "Перегрузка" : unassignedTasks ? `Не назначено: ${unassignedTasks}` : forecast > game.budget ? "Риск бюджета" : "Всё по плану";
+  const healthTone = absentName || overloadedPeople.length || forecast > game.budget ? "danger" : unassignedTasks ? "warning" : "good";
   const overallProgress = game.taskState.reduce((sum, task) => sum + task.progress, 0) / game.tasks.length;
   const isFinished = game.status === "won" || game.status === "lost";
+  const allTasksAssigned = unassignedTasks === 0;
 
   function assign(taskIndex: number, value: string) {
     setGame((current) => {
@@ -334,7 +335,8 @@ export default function ProjectGame() {
   }
 
   function toggleRun() {
-    if (game.status === "ready" && game.assignments.every((person) => person === null)) {
+    const starting = game.status === "ready" || game.status === "paused";
+    if (starting && !allTasksAssigned) {
       setShowStartWarning(true);
       return;
     }
@@ -348,11 +350,6 @@ export default function ProjectGame() {
   function startFreshProject() {
     setShowStartWarning(false);
     setGame((current) => freshGame(nextSeed(), current));
-  }
-
-  function forceStart() {
-    setShowStartWarning(false);
-    setGame((current) => ({ ...current, status: "running" }));
   }
 
   function acknowledgeEvent() {
@@ -474,7 +471,7 @@ export default function ProjectGame() {
 
               {game.tasks.map((task, index) => {
                 const state = game.taskState[index];
-                const late = game.week > task.end && state.progress < 100;
+                const late = game.week > task.end && !isTaskComplete(state.progress);
                 const variance = state.spent - task.budget;
                 const assigned = game.assignments[index];
                 const unavailable = assigned !== null && assigned === game.absentPerson && game.absentUntil > game.week;
@@ -498,7 +495,7 @@ export default function ProjectGame() {
                       <div className="week-grid grid-lines">{Array.from({ length: DEADLINE }, (_, i) => <span key={i} />)}</div>
                       <div className="project-deadline-line"><b>ДЕДЛАЙН</b></div>
                       {parentIndex !== undefined && <span className="dependency-link" aria-hidden="true" style={{ left: `${(task.start / DEADLINE) * 100}%`, top: `${-((index - parentIndex) * 90) + 65}px`, height: `${(index - parentIndex) * 90 - 40}px` }} />}
-                      <div className={`task-bar ${state.progress >= 99.9 ? "complete" : ""} ${unavailable ? "blocked" : ""} ${waiting ? "waiting" : ""}`} style={{ left: `${(task.start / DEADLINE) * 100}%`, width: `${((task.end - task.start) / DEADLINE) * 100}%`, "--task-color": task.color } as CSSProperties} role="progressbar" aria-label={`Прогресс задачи «${task.name}»`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(state.progress)}>
+                      <div className={`task-bar ${isTaskComplete(state.progress) ? "complete" : ""} ${unavailable ? "blocked" : ""} ${waiting ? "waiting" : ""}`} style={{ left: `${(task.start / DEADLINE) * 100}%`, width: `${((task.end - task.start) / DEADLINE) * 100}%`, "--task-color": task.color } as CSSProperties} role="progressbar" aria-label={`Прогресс задачи «${task.name}»`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(state.progress)}>
                         <i style={{ width: `${state.progress}%` }} />
                         <span>{Math.round(state.progress)}%{unavailable ? " · пауза" : waiting ? " · ждёт" : ""}</span>
                       </div>
@@ -524,7 +521,7 @@ export default function ProjectGame() {
       <section className="control-deck">
         <div className="control-status">
           <span className={`status-orb ${healthTone}`}>{game.status === "running" ? "▶" : game.status === "paused" ? "Ⅱ" : "●"}</span>
-          <div><p>{game.status === "ready" ? "План готов к запуску" : game.status === "paused" ? "Симуляция на паузе" : game.status === "running" ? "Проект в работе" : game.status === "won" ? "Проект успешно запущен" : "Дедлайн наступил"}</p><span>{absentName ? `${absentName} временно не работает` : overloadedPeople.length ? `Перегружены: ${overloadedPeople.map((p) => p.name).join(", ")}` : unassignedRemaining ? `Без исполнителя: ${unassignedRemaining}${unassignedActive ? `, уже активны: ${unassignedActive}` : ""}` : "Ресурсы распределены корректно"}</span></div>
+          <div><p>{game.status === "ready" ? (allTasksAssigned ? "План готов к запуску" : "Назначьте всех исполнителей") : game.status === "paused" ? "Симуляция на паузе" : game.status === "running" ? "Проект в работе" : game.status === "won" ? "Проект успешно запущен" : "Дедлайн наступил"}</p><span>{absentName ? `${absentName} временно не работает` : overloadedPeople.length ? `Перегружены: ${overloadedPeople.map((p) => p.name).join(", ")}` : unassignedTasks ? `Без исполнителя: ${unassignedTasks}${unassignedActive ? `, уже активны: ${unassignedActive}` : ""}` : "Ресурсы распределены корректно"}</span></div>
         </div>
         <div className="next-event"><span>✦</span><div><b>СЛЕДУЮЩИЙ РИСК</b><small>{game.eventCount >= MAX_EVENTS ? "события завершены" : `примерно через ${Math.max(0, Math.ceil(game.nextEventWeek - game.week))} нед.`}</small></div></div>
         <div className="main-controls">
@@ -555,9 +552,9 @@ export default function ProjectGame() {
           <div className="result-modal start-warning">
             <span className="result-icon">!</span>
             <p>ПЕРЕД СТАРТОМ</p>
-            <h2 id="warning-title">Ни одна задача не назначена</h2>
-            <span className="warning-copy">Время начнёт идти, но работа не сдвинется. Назначь людей сейчас или осознанно запусти проект без команды.</span>
-            <div className="warning-actions"><button className="secondary-action" onClick={() => setShowStartWarning(false)}>Вернуться к плану</button><button onClick={forceStart}>Всё равно запустить</button></div>
+            <h2 id="warning-title">Назначьте исполнителя каждой задаче</h2>
+            <span className="warning-copy">До запуска осталось распределить {unassignedTasks} {unassignedTasks === 1 ? "задачу" : unassignedTasks < 5 ? "задачи" : "задач"}. Один специалист может быть назначен на несколько задач.</span>
+            <button onClick={() => setShowStartWarning(false)}>Вернуться к плану</button>
           </div>
         </div>
       )}

@@ -1,4 +1,5 @@
 export const DEADLINE = 18;
+export const TASK_COMPLETE = 99.9;
 
 export type Person = {
   name: string;
@@ -104,18 +105,21 @@ export function generateScenario(seed: number, previous?: Pick<Scenario, "team" 
   const selectedNames = shuffle(availableNames, random).slice(0, 4);
   const colorOrder = shuffle(colors, random);
   const usedCosts = new Set<number>();
+  const speedBands = shuffle<"slow" | "fast" | "mixed">(["slow", "fast", "mixed", "mixed"], random);
 
   const team = selectedNames.map((name, index) => {
-    const speed = Math.round((0.75 + random() * 0.8) * 100) / 100;
+    const band = speedBands[index];
+    const rawSpeed = band === "slow"
+      ? 0.76 + random() * 0.22
+      : band === "fast"
+        ? 1.08 + random() * 0.45
+        : 0.82 + random() * 0.68;
+    const speed = Math.round(rawSpeed * 100) / 100;
     let cost = roundTo(105 + speed * 115 + random() * 72, 5);
     while (usedCosts.has(cost)) cost += 5;
     usedCosts.add(cost);
     return { name, speed, cost, color: colorOrder[index], initials: getInitials(name) };
   });
-
-  if (Math.max(...team.map((person) => person.speed)) < 1.15) {
-    team[0] = { ...team[0], speed: 1.18, cost: Math.max(team[0].cost, 270) };
-  }
 
   const previousTaskNames = new Set(previous?.tasks.map((task) => task.name) ?? []);
   const countOptions = [4, 5, 6, 7].filter((count) => count !== previous?.tasks.length);
@@ -146,7 +150,12 @@ export function generateScenario(seed: number, previous?: Pick<Scenario, "team" 
     }
 
     const possibleDurations = durations.filter((duration) => start + duration <= DEADLINE);
-    const duration = possibleDurations[Math.floor(random() * possibleDurations.length)] ?? Math.max(1, DEADLINE - start);
+    let duration = possibleDurations[Math.floor(random() * possibleDurations.length)] ?? Math.max(1, DEADLINE - start);
+    if (index === taskCount - 1) {
+      duration = durations[Math.floor(random() * durations.length)];
+      start = DEADLINE - duration;
+      dependsOn = [];
+    }
     const end = start + duration;
     const effort = Math.round(duration * (0.75 + random() * 0.25) * 10) / 10;
     const budget = roundTo(effort * medianRate * (0.94 + random() * 0.14), 10);
@@ -168,5 +177,15 @@ export function generateScenario(seed: number, previous?: Pick<Scenario, "team" 
 }
 
 export function dependenciesComplete(tasks: ProjectTask[], taskState: Array<{ progress: number }>, taskIndex: number) {
-  return tasks[taskIndex].dependsOn.every((dependency) => taskState[dependency].progress >= 99.9);
+  return tasks[taskIndex].dependsOn.every((dependency) => isTaskComplete(taskState[dependency].progress));
+}
+
+export function isTaskComplete(progress: number) {
+  return progress >= TASK_COMPLETE;
+}
+
+export function isTaskActive(tasks: ProjectTask[], taskState: Array<{ progress: number }>, taskIndex: number, week: number) {
+  return week >= tasks[taskIndex].start
+    && dependenciesComplete(tasks, taskState, taskIndex)
+    && !isTaskComplete(taskState[taskIndex].progress);
 }
