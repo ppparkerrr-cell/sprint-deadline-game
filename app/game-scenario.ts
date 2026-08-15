@@ -71,12 +71,11 @@ const taskPool = [
 ];
 
 const colors = ["#ff7352", "#ff9f43", "#8b5cf6", "#3b82f6", "#1fc9a5", "#ef4f91", "#f6b73c", "#69d2e7"];
-const stageDurationPlans = [
-  [4, 4, 4, 3.5, 2.5],
-  [4, 4, 4, 3, 3],
-  [4, 4, 3.5, 3.5, 3],
-  [4, 3.5, 3.5, 3.5, 3.5],
-];
+const branchSizePlans: Record<number, number[][]> = {
+  5: [[3, 2], [3, 1, 1]],
+  6: [[3, 3], [4, 2], [3, 2, 1], [4, 1, 1]],
+  7: [[4, 3], [5, 2], [3, 2, 2], [4, 2, 1], [5, 1, 1]],
+};
 
 function createRandom(seed: number) {
   let value = (seed || 4) >>> 0;
@@ -101,6 +100,19 @@ function roundTo(value: number, step: number) {
 
 function getInitials(name: string) {
   return name.replace(/[^А-Яа-яЁё]/g, "").slice(0, 2).toUpperCase();
+}
+
+function splitDuration(total: number, count: number, random: () => number) {
+  const minimumSteps = 5;
+  const steps = Array.from({ length: count }, () => minimumSteps);
+  let remainingSteps = Math.round(total * 2) - minimumSteps * count;
+
+  while (remainingSteps > 0) {
+    steps[Math.floor(random() * count)] += 1;
+    remainingSteps -= 1;
+  }
+
+  return steps.map((value) => value / 2);
 }
 
 export function generateScenario(seed: number, previous?: Pick<Scenario, "team" | "tasks">): Scenario {
@@ -133,30 +145,61 @@ export function generateScenario(seed: number, previous?: Pick<Scenario, "team" 
   const taskColors = shuffle(colors, random);
   const medianRate = [...team].map((person) => person.cost / person.speed).sort((a, b) => a - b)[Math.floor(team.length / 2)];
   const tasks: ProjectTask[] = [];
-  const stageDurations = shuffle(
-    stageDurationPlans[Math.floor(random() * stageDurationPlans.length)],
-    random,
-  );
-  const tasksPerStage = Array.from({ length: stageDurations.length }, () => 1);
-  shuffle([0, 1, 2, 3, 4], random)
-    .slice(0, taskCount - stageDurations.length)
-    .forEach((stageIndex) => {
-      tasksPerStage[stageIndex] += 1;
+  const sizePlans = branchSizePlans[taskCount];
+  const branchSizes = [...sizePlans[Math.floor(random() * sizePlans.length)]];
+  const anchorCandidates = branchSizes
+    .map((size, branchIndex) => ({ size, branchIndex }))
+    .filter(({ size }) => size > 1)
+    .map(({ branchIndex }) => branchIndex);
+  const anchorBranch = anchorCandidates[Math.floor(random() * anchorCandidates.length)];
+  const branchOffsets = branchSizes.map((_, branchIndex) => (
+    branchIndex === anchorBranch ? 0 : Math.floor(random() * 9) / 2
+  ));
+  const branchDurations = branchSizes.map((size, branchIndex) => {
+    if (branchIndex === anchorBranch) return splitDuration(DEADLINE, size, random);
+    const minimumHorizon = Math.max(size * 2.5, 7);
+    const maximumHorizon = Math.min(
+      DEADLINE - branchOffsets[branchIndex],
+      size === 1 ? DEADLINE - 0.5 : DEADLINE,
+    );
+    const availableHalfSteps = Math.round((maximumHorizon - minimumHorizon) * 2);
+    const horizon = minimumHorizon + Math.floor(random() * (availableHalfSteps + 1)) / 2;
+    return splitDuration(horizon, size, random);
+  });
+  const branchStarts = branchDurations.map((durations, branchIndex) => {
+    let cursor = branchOffsets[branchIndex];
+    return durations.map((duration) => {
+      const start = cursor;
+      cursor += duration;
+      return start;
     });
+  });
+  const rowIndexes = branchSizes.map(() => [] as number[]);
+  const primaryBranch = branchSizes.findIndex((size) => size > 1);
+  const rootOrder = [
+    primaryBranch,
+    ...shuffle(
+      branchSizes.map((_, branchIndex) => branchIndex).filter((branchIndex) => branchIndex !== primaryBranch),
+      random,
+    ),
+  ];
+  const maximumDepth = Math.max(...branchSizes);
 
-  let start = 0;
-  let templateIndex = 0;
-  let previousStageIndexes: number[] = [];
+  for (let depth = 0; depth < maximumDepth; depth += 1) {
+    const branchesAtDepth = depth === 0
+      ? rootOrder
+      : shuffle(
+        branchSizes.map((_, branchIndex) => branchIndex).filter((branchIndex) => branchSizes[branchIndex] > depth),
+        random,
+      );
 
-  stageDurations.forEach((duration, stageIndex) => {
-    const currentStageIndexes: number[] = [];
-
-    for (let position = 0; position < tasksPerStage[stageIndex]; position += 1) {
+    branchesAtDepth.forEach((branchIndex) => {
+      if (branchSizes[branchIndex] <= depth) return;
       const index = tasks.length;
-      const template = selectedTasks[templateIndex];
-      const dependsOn = previousStageIndexes.length === 0
-        ? []
-        : [previousStageIndexes[Math.floor(random() * previousStageIndexes.length)]];
+      const template = selectedTasks[index];
+      const start = branchStarts[branchIndex][depth];
+      const duration = branchDurations[branchIndex][depth];
+      const dependsOn = depth === 0 ? [] : [rowIndexes[branchIndex][depth - 1]];
       const effort = Math.round(duration * (0.75 + random() * 0.25) * 10) / 10;
       const budget = roundTo(effort * medianRate * (0.94 + random() * 0.14), 10);
 
@@ -170,13 +213,9 @@ export function generateScenario(seed: number, previous?: Pick<Scenario, "team" 
         color: taskColors[index % taskColors.length],
         dependsOn,
       });
-      currentStageIndexes.push(index);
-      templateIndex += 1;
-    }
-
-    previousStageIndexes = currentStageIndexes;
-    start += duration;
-  });
+      rowIndexes[branchIndex][depth] = index;
+    });
+  }
 
   const budget = roundTo(tasks.reduce((sum, task) => sum + task.budget, 0) * (1.08 + random() * 0.08), 50);
   return { seed: seed >>> 0, team, tasks, budget };

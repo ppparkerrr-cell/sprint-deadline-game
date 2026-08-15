@@ -118,7 +118,7 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid
 .legend-deadline { width: 3px !important; height: 17px !important; border-radius: 0 !important; background: repeating-linear-gradient(to bottom, #ff5f57 0 4px, transparent 4px 7px); }
 .gantt-scroll { overflow-x: auto; scrollbar-color: #454752 transparent; scrollbar-width: thin; }
 .gantt-scroll::after { content: "Проведите по диаграмме, чтобы увидеть следующие недели →"; display: none; padding: 10px 18px 3px; color: #a4a6b1; font-size: 12px; }
-.gantt-board { --gantt-task-column: 230px; --gantt-timeline-column: 650px; --gantt-cost-column: 120px; min-width: 1050px; padding: 0 18px 14px; }
+.gantt-board { --gantt-task-column: 230px; --gantt-timeline-column: 650px; --gantt-cost-column: 120px; position: relative; min-width: 1050px; padding: 0 18px 14px; }
 .gantt-top-row, .gantt-row, .deadline-row { display: grid; grid-template-columns: var(--gantt-task-column) minmax(var(--gantt-timeline-column), 1fr) var(--gantt-cost-column); }
 .gantt-top-row > *, .gantt-row > *, .deadline-row > * { min-width: 0; }
 .gantt-top-row { min-height: 40px; align-items: center; color: #a3a5af; font-size: 12px; font-weight: 800; letter-spacing: .08em; }
@@ -140,10 +140,19 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid
 .grid-lines { position: absolute; inset: 0; }
 .grid-lines span { border-left: 1px solid rgba(255,255,255,.035); }
 .grid-lines span:last-child { border-right: 1px solid rgba(255,255,255,.035); }
-.dependency-link { position: absolute; z-index: 1; width: 2px; transform: translateX(-50%); pointer-events: none; background: rgba(246,183,60,.7); box-shadow: 0 0 8px rgba(246,183,60,.2); }
-.dependency-link::before, .dependency-link::after { content: ""; position: absolute; left: 50%; width: 7px; height: 7px; transform: translate(-50%,-50%) rotate(45deg); border: 1px solid #352b16; background: #f6c75f; }
-.dependency-link::before { top: 0; }
-.dependency-link::after { top: 100%; }
+.dependency-connectors { position: absolute; z-index: 3; inset: 0; overflow: visible; pointer-events: none; }
+.dependency-connector-source-segment,
+.dependency-connector-target-segment,
+.dependency-connector-vertical-segment { position: absolute; background: rgba(246,199,95,.92); box-shadow: 0 0 8px rgba(246,183,60,.3); }
+.dependency-connector-source-segment,
+.dependency-connector-target-segment { height: 2px; transform: translateY(-50%); }
+.dependency-connector-vertical-segment { width: 2px; transform: translateX(-50%); }
+.dependency-connector-source { position: absolute; width: 7px; height: 7px; transform: translate(-50%,-50%); border: 1px solid #352b16; border-radius: 50%; background: #f6c75f; box-shadow: 0 0 7px rgba(246,183,60,.32); }
+.dependency-connector-arrow { position: absolute; width: 0; height: 0; filter: drop-shadow(0 0 4px rgba(246,183,60,.35)); }
+.dependency-connector-right .dependency-connector-arrow { transform: translateY(-50%); border-top: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 7px solid #f6c75f; }
+.dependency-connector-left .dependency-connector-arrow { transform: translate(-100%,-50%); border-top: 5px solid transparent; border-right: 7px solid #f6c75f; border-bottom: 5px solid transparent; }
+.dependency-connector-down .dependency-connector-arrow { transform: translateX(-50%); border-top: 7px solid #f6c75f; border-right: 5px solid transparent; border-left: 5px solid transparent; }
+.dependency-connector-up .dependency-connector-arrow { transform: translate(-50%,-100%); border-right: 5px solid transparent; border-bottom: 7px solid #f6c75f; border-left: 5px solid transparent; }
 .task-bar { position: absolute; z-index: 2; top: 25px; height: 40px; overflow: hidden; border: 1px dashed color-mix(in srgb, var(--task-color) 62%, #fff 8%); border-radius: 9px; background: #292c35; background: color-mix(in srgb, var(--task-color) 16%, #292c35); box-shadow: 0 8px 20px rgba(0,0,0,.16); transition: filter .2s, box-shadow .2s; }
 .task-bar::after { content: ""; position: absolute; z-index: 1; inset: 0; pointer-events: none; background: linear-gradient(110deg, rgba(255,255,255,.15), transparent 32%); }
 .task-bar i { position: absolute; z-index: 0; inset: 0 auto 0 0; height: 100%; background: var(--task-color); box-shadow: inset -1px 0 rgba(255,255,255,.4); transition: width .35s linear; }
@@ -165,7 +174,7 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid
 .late-flag { position: absolute; z-index: 5; top: 17px; display: grid; place-items: center; width: 22px; height: 22px; transform: translateX(-50%); border: 2px solid #2b1518; border-radius: 50%; color: white; background: #e94d4d; font-size: 12px; font-weight: 900; }
 .task-cost { display: flex; flex-direction: column; justify-content: center; align-items: flex-end; }
 .task-cost b { font-size: 14px; }
-.task-cost span { margin-top: 4px; font-size: 12px; }
+.task-cost span { max-width: 120px; margin-top: 4px; font-size: 12px; line-height: 1.25; text-align: right; }
 .task-cost .positive { color: var(--mint); }
 .task-cost .negative { color: var(--coral); }
 .deadline-row { min-height: 64px; align-items: center; border-top: 1px solid rgba(255,255,255,.08); }
@@ -211,8 +220,14 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid
 .empty-log { grid-column: 1 / -1; display: grid; place-items: center; min-height: 74px; margin: 0; border: 1px dashed rgba(255,255,255,.12); border-radius: 12px; color: #b3b4be; font-size: 14px; text-align: center; }
 
 .how-to-section { position: relative; z-index: 1; display: grid; grid-template-columns: minmax(0,.9fr) minmax(360px,1.1fr); align-items: center; gap: 28px; margin: 14px 0; padding: 24px; border: 1px solid rgba(139,92,246,.22); border-radius: 18px; background: linear-gradient(135deg, rgba(139,92,246,.09), rgba(31,201,165,.045)); }
+.how-to-section.collapsed { grid-template-columns: 1fr; padding-block: 16px; }
 .how-to-copy h2 { margin: 0 0 10px; font-size: clamp(25px,3vw,36px); line-height: 1.08; letter-spacing: -.035em; }
 .how-to-copy > p:not(.section-kicker) { max-width: 610px; margin: 0; color: #c4c5ce; font-size: 15px; line-height: 1.6; }
+.how-to-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.how-to-collapse-button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; padding: 0 16px; border: 1px solid rgba(255,255,255,.15); border-radius: 12px; color: #dedee6; background: rgba(255,255,255,.04); font-size: 13px; font-weight: 800; cursor: pointer; }
+.how-to-collapse-button:hover { border-color: rgba(255,255,255,.28); background: rgba(255,255,255,.08); }
+.how-to-compact { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
+.how-to-compact h2 { margin-bottom: 0; font-size: clamp(22px,2.4vw,30px); }
 .how-to-points { display: flex; flex-wrap: wrap; gap: 8px; margin: 17px 0; }
 .how-to-points > span { display: inline-flex; align-items: center; gap: 7px; min-height: 38px; padding: 5px 11px 5px 6px; border: 1px solid rgba(255,255,255,.11); border-radius: 999px; color: #dadbe2; background: rgba(255,255,255,.04); font-size: 13px; font-weight: 800; }
 .how-to-points b { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; color: #17171c; background: var(--coral); font-size: 12px; }

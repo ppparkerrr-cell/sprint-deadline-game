@@ -84,8 +84,19 @@ type GameState = {
   assignmentChanges: number;
 };
 
+type DependencyConnectorGeometry = {
+  key: string;
+  sourceX: number;
+  sourceY: number;
+  targetX: number;
+  targetY: number;
+  bendX: number;
+  direction: "up" | "right" | "down" | "left";
+};
+
 const TICK = 0.25;
 const MAX_EVENTS = 4;
+const INLINE_GUIDE_STORAGE_KEY = "sprint-deadline-inline-guide-seen";
 function freshGame(seed = 0, previous?: GameState): GameState {
   const scenario = generateScenario(seed || 4, previous);
   return {
@@ -124,6 +135,19 @@ function freshGame(seed = 0, previous?: GameState): GameState {
 
 function money(value: number) {
   return `${Math.round(value).toLocaleString("ru-RU")} тыс. ₽`;
+}
+
+function budgetPosition(limit: number, spent: number) {
+  const balance = Math.round(limit - spent);
+  return balance >= 0 ? `резерв ${money(balance)}` : `перерасход ${money(Math.abs(balance))}`;
+}
+
+function rememberInlineGuideSeen() {
+  try {
+    window.localStorage.setItem(INLINE_GUIDE_STORAGE_KEY, "1");
+  } catch {
+    // Сворачивание работает в текущей вкладке и без localStorage.
+  }
 }
 
 function scoreFor(game: GameState) {
@@ -305,9 +329,14 @@ function resolveEventChoice(current: GameState, choice: EventChoice): GameState 
 export default function ProjectGame() {
   const [game, setGame] = useState<GameState>(freshGame);
   const [showRules, setShowRules] = useState(false);
+  const [isInlineGuideExpanded, setIsInlineGuideExpanded] = useState(false);
   const [showStartWarning, setShowStartWarning] = useState(false);
   const [record, setRecord] = useState(0);
+  const [dependencyConnectors, setDependencyConnectors] = useState<DependencyConnectorGeometry[]>([]);
   const seedSequence = useRef(1);
+  const inlineGuideRef = useRef<HTMLElement>(null);
+  const ganttBoardRef = useRef<HTMLDivElement>(null);
+  const taskBarRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   function nextSeed() {
     const values = new Uint32Array(1);
@@ -323,10 +352,80 @@ export default function ProjectGame() {
       } catch {
         setRecord(0);
       }
+      try {
+        setIsInlineGuideExpanded(window.localStorage.getItem(INLINE_GUIDE_STORAGE_KEY) !== "1");
+      } catch {
+        setIsInlineGuideExpanded(true);
+      }
       setGame((current) => current.seed === 0 ? freshGame(nextSeed(), current) : current);
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    const guide = inlineGuideRef.current;
+    if (!guide || !isInlineGuideExpanded) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting && entry.intersectionRatio >= 0.45)) {
+        rememberInlineGuideSeen();
+        observer.disconnect();
+      }
+    }, { threshold: [0.45] });
+    observer.observe(guide);
+    return () => observer.disconnect();
+  }, [isInlineGuideExpanded]);
+
+  useEffect(() => {
+    const board = ganttBoardRef.current;
+    if (!board) return;
+    let frame = 0;
+
+    const measureConnectors = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const boardRect = board.getBoundingClientRect();
+        const connectors = game.tasks.flatMap((task, childIndex) => task.dependsOn.flatMap((parentIndex) => {
+          const parentBar = taskBarRefs.current[parentIndex];
+          const childBar = taskBarRefs.current[childIndex];
+          if (!parentBar || !childBar) return [];
+
+          const parentRect = parentBar.getBoundingClientRect();
+          const childRect = childBar.getBoundingClientRect();
+          const sourceX = parentRect.right - boardRect.left;
+          const sourceY = parentRect.top + parentRect.height / 2 - boardRect.top;
+          const targetX = childRect.left - boardRect.left;
+          const targetY = childRect.top + childRect.height / 2 - boardRect.top;
+          const sameColumn = Math.abs(targetX - sourceX) < 2;
+          const bendX = sameColumn ? sourceX : sourceX + (targetX - sourceX) / 2;
+          const direction = sameColumn
+            ? (targetY >= sourceY ? "down" : "up")
+            : (targetX >= bendX ? "right" : "left");
+
+          return [{
+            key: `${parentIndex}-${childIndex}`,
+            sourceX,
+            sourceY,
+            targetX,
+            targetY,
+            bendX,
+            direction,
+          } satisfies DependencyConnectorGeometry];
+        }));
+        setDependencyConnectors(connectors);
+      });
+    };
+
+    measureConnectors();
+    const resizeObserver = new ResizeObserver(measureConnectors);
+    resizeObserver.observe(board);
+    taskBarRefs.current.forEach((bar) => bar && resizeObserver.observe(bar));
+    window.addEventListener("resize", measureConnectors);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", measureConnectors);
+    };
+  }, [game.tasks]);
 
   useEffect(() => {
     if (!showRules) return;
@@ -576,6 +675,19 @@ export default function ProjectGame() {
     });
   }
 
+  function openRules() {
+    rememberInlineGuideSeen();
+    setIsInlineGuideExpanded(false);
+    setShowRules(true);
+  }
+
+  function toggleInlineGuide() {
+    setIsInlineGuideExpanded((expanded) => {
+      if (expanded) rememberInlineGuideSeen();
+      return !expanded;
+    });
+  }
+
   return (
     <main className="game-shell">
       <div className="ambient ambient-one" />
@@ -587,7 +699,7 @@ export default function ProjectGame() {
           <b>ДЕДЛАЙН</b>
         </a>
         <div className="top-actions">
-          <button className="quiet-button" onClick={() => setShowRules(true)}>Как играть</button>
+          <button className="quiet-button" onClick={openRules}>Как играть</button>
           <div className="record-pill"><span>Личный рекорд</span><b>{record.toLocaleString("ru-RU")}</b></div>
         </div>
       </header>
@@ -599,28 +711,36 @@ export default function ProjectGame() {
         </div>
         <div className="hero-actions">
           <p className="hero-copy">Распредели людей по задачам, реагируй на события и доведи продукт до релиза за 18 недель.</p>
-          <button className="guide-button" onClick={() => setShowRules(true)}><span>?</span> Посмотреть инструкцию</button>
+          <button className="guide-button" onClick={openRules}><span>?</span> Посмотреть инструкцию</button>
         </div>
       </section>
 
-      <section className="how-to-section" id="how-to-play" aria-labelledby="how-to-heading">
-        <div className="how-to-copy">
-          <p className="section-kicker">КАК ИГРАТЬ · 30 СЕКУНД</p>
-          <h2 id="how-to-heading">Назначай. Следи. Перестраивай.</h2>
-          <p>Цветная полоса — план задачи, заливка внутри — фактический прогресс. Голубая линия показывает текущую неделю, красная справа — финальный дедлайн.</p>
-          <div className="how-to-points"><span><b>1</b>Назначь людей</span><span><b>2</b>Запусти время</span><span><b>3</b>Уложись в бюджет</span></div>
-          <button className="guide-button" onClick={() => setShowRules(true)}><span>?</span> Открыть инструкцию с пояснениями</button>
-        </div>
-        <button className="how-to-preview" onClick={() => setShowRules(true)} aria-label="Открыть подробную визуальную инструкцию">
-          <Image src="/how-to-play.png" width={1672} height={941} sizes="(max-width: 1000px) 100vw, 52vw" unoptimized alt="Визуальная схема игрового поля с командой, прогрессом задач, линией текущего времени, дедлайном и случайными событиями" />
-          <span>Нажми, чтобы рассмотреть схему</span>
-        </button>
+      <section ref={inlineGuideRef} className={`how-to-section ${isInlineGuideExpanded ? "expanded" : "collapsed"}`} id="how-to-play" aria-labelledby="how-to-heading">
+        {isInlineGuideExpanded ? <>
+          <div className="how-to-copy">
+            <p className="section-kicker">КАК ИГРАТЬ · 30 СЕКУНД</p>
+            <h2 id="how-to-heading">Назначай. Следи. Перестраивай.</h2>
+            <p>Цветная полоса — план задачи, заливка внутри — фактический прогресс. Голубая линия показывает текущую неделю, красная справа — финальный дедлайн.</p>
+            <div className="how-to-points"><span><b>1</b>Назначь людей</span><span><b>2</b>Запусти время</span><span><b>3</b>Уложись в бюджет</span></div>
+            <div className="how-to-actions">
+              <button className="guide-button" onClick={openRules}><span>?</span> Открыть инструкцию с пояснениями</button>
+              <button className="how-to-collapse-button" onClick={toggleInlineGuide} aria-expanded={true}>Свернуть подсказку ↑</button>
+            </div>
+          </div>
+          <button className="how-to-preview" onClick={openRules} aria-label="Открыть подробную визуальную инструкцию">
+            <Image src="/how-to-play.png" width={1672} height={941} sizes="(max-width: 1000px) 100vw, 52vw" unoptimized alt="Визуальная схема игрового поля с командой, прогрессом задач, линией текущего времени, дедлайном и случайными событиями" />
+            <span>Нажми, чтобы рассмотреть схему</span>
+          </button>
+        </> : <div className="how-to-copy how-to-compact">
+          <div><p className="section-kicker">КАК ИГРАТЬ</p><h2 id="how-to-heading">Назначь → запусти → контролируй</h2></div>
+          <button className="guide-button" onClick={toggleInlineGuide} aria-expanded={false}><span>+</span> Показать, как играть</button>
+        </div>}
       </section>
 
       <section className="stats-grid" aria-label="Состояние проекта">
         <article className="stat-card budget-card">
           <div className="stat-label"><span>БЮДЖЕТ</span><i className={game.spent > game.budget ? "dot danger-dot" : "dot"} /></div>
-          <strong>{money(game.budget - game.spent)}</strong>
+          <strong>{budgetPosition(game.budget, game.spent)}</strong>
           <div className="meter"><i style={{ width: `${Math.min(100, (game.spent / game.budget) * 100)}%` }} /></div>
           <small>Потрачено {money(game.spent)} из {money(game.budget)}</small>
         </article>
@@ -681,7 +801,24 @@ export default function ProjectGame() {
           </div>
 
           <div className="gantt-scroll">
-            <div className="gantt-board">
+            <div className="gantt-board" ref={ganttBoardRef}>
+              <div className="dependency-connectors" aria-hidden="true">
+                {dependencyConnectors.map((connector) => {
+                  const firstLeft = Math.min(connector.sourceX, connector.bendX);
+                  const firstWidth = Math.abs(connector.bendX - connector.sourceX);
+                  const targetLeft = Math.min(connector.bendX, connector.targetX);
+                  const targetWidth = Math.abs(connector.targetX - connector.bendX);
+                  const verticalTop = Math.min(connector.sourceY, connector.targetY);
+                  const verticalHeight = Math.abs(connector.targetY - connector.sourceY);
+                  return <span className={`dependency-connector dependency-connector-${connector.direction}`} key={connector.key}>
+                    {firstWidth > 0.5 && <span className="dependency-connector-source-segment" style={{ left: firstLeft, top: connector.sourceY, width: firstWidth }} />}
+                    <span className="dependency-connector-vertical-segment" style={{ left: connector.bendX, top: verticalTop, height: Math.max(2, verticalHeight) }} />
+                    {targetWidth > 0.5 && <span className="dependency-connector-target-segment" style={{ left: targetLeft, top: connector.targetY, width: targetWidth }} />}
+                    <span className="dependency-connector-source" style={{ left: connector.sourceX, top: connector.sourceY }} />
+                    <span className="dependency-connector-arrow" style={{ left: connector.targetX, top: connector.targetY }} />
+                  </span>;
+                })}
+              </div>
               <div className="gantt-top-row">
                 <div className="task-col-title">ЗАДАЧА / ИСПОЛНИТЕЛЬ</div>
                 <div className="week-grid week-labels">{Array.from({ length: DEADLINE }, (_, i) => <span className={i === DEADLINE - 1 ? "deadline-week" : ""} key={i}>{i + 1}</span>)}</div>
@@ -696,7 +833,6 @@ export default function ProjectGame() {
                 const unavailable = assigned !== null && assigned === game.absentPerson && game.absentUntil > game.week;
                 const waiting = game.week >= task.start && !dependenciesComplete(game.tasks, game.taskState, index);
                 const dependencyNames = task.dependsOn.map((dependency) => game.tasks[dependency].short).join(" + ");
-                const parentIndex = task.dependsOn[0];
                 return (
                   <div className={`gantt-row ${late ? "late-row" : ""} ${waiting ? "waiting-row" : ""}`} key={task.id}>
                     <div className="task-info">
@@ -713,8 +849,7 @@ export default function ProjectGame() {
                     <div className="timeline-cell">
                       <div className="week-grid grid-lines">{Array.from({ length: DEADLINE }, (_, i) => <span key={i} />)}</div>
                       <div className="project-deadline-line"><b>ДЕДЛАЙН</b></div>
-                      {parentIndex !== undefined && <span className="dependency-link" aria-hidden="true" style={{ left: `${(task.start / DEADLINE) * 100}%`, top: `${-((index - parentIndex) * 90) + 65}px`, height: `${(index - parentIndex) * 90 - 40}px` }} />}
-                      <div className={`task-bar ${isTaskComplete(state.progress) ? "complete" : ""} ${unavailable ? "blocked" : ""} ${waiting ? "waiting" : ""}`} style={{ left: `${(task.start / DEADLINE) * 100}%`, width: `${((task.end - task.start) / DEADLINE) * 100}%`, "--task-color": task.color } as CSSProperties} role="progressbar" aria-label={`Прогресс задачи «${task.name}»`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(state.progress)}>
+                      <div ref={(element) => { taskBarRefs.current[index] = element; }} className={`task-bar ${isTaskComplete(state.progress) ? "complete" : ""} ${unavailable ? "blocked" : ""} ${waiting ? "waiting" : ""}`} style={{ left: `${(task.start / DEADLINE) * 100}%`, width: `${((task.end - task.start) / DEADLINE) * 100}%`, "--task-color": task.color } as CSSProperties} role="progressbar" aria-label={`Прогресс задачи «${task.name}»`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(state.progress)}>
                         <i style={{ width: `${state.progress}%` }} />
                         <span>{Math.round(state.progress)}%{unavailable ? " · пауза" : waiting ? " · ждёт" : ""}</span>
                       </div>
@@ -722,7 +857,7 @@ export default function ProjectGame() {
                       {late && <span className="late-flag" style={{ left: `${(task.end / DEADLINE) * 100}%` }}>!</span>}
                       <div className="now-line" style={{ left: `${(game.week / DEADLINE) * 100}%` }}><i />{index === 0 && <b>СЕЙЧАС</b>}</div>
                     </div>
-                    <div className="task-cost"><b>{money(state.spent)}</b><span className={variance > 0 ? "negative" : "positive"}>{variance > 0 ? "+" : ""}{money(variance)}</span></div>
+                    <div className="task-cost"><b>{money(state.spent)}</b><span className={variance > 0 ? "negative" : "positive"}>{budgetPosition(task.budget, state.spent)}</span></div>
                   </div>
                 );
               })}
@@ -758,7 +893,7 @@ export default function ProjectGame() {
         </div>
       </section>
 
-      <footer><p>СПРИНТ: ДЕДЛАЙН</p><span>Игра-тренажёр проектного мышления</span><button onClick={() => setShowRules(true)}>Подробная инструкция</button></footer>
+      <footer><p>СПРИНТ: ДЕДЛАЙН</p><span>Игра-тренажёр проектного мышления</span><button onClick={openRules}>Подробная инструкция</button></footer>
 
       {game.pendingEvent && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="event-title">
@@ -811,8 +946,8 @@ export default function ProjectGame() {
               </article>
               <article className="debrief-card">
                 <span className="debrief-label">БЮДЖЕТ</span>
-                <strong className="debrief-value">{game.spent <= game.budget ? `Резерв ${money(game.budget - game.spent)}` : `Перерасход ${money(game.spent - game.budget)}`}</strong>
-                <p className="debrief-copy">Наибольшее отклонение: «{debrief.worstBudget.task.short}» — {debrief.worstBudget.variance > 0 ? "+" : ""}{money(debrief.worstBudget.variance)}.</p>
+                <strong className="debrief-value">{budgetPosition(game.budget, game.spent)}</strong>
+                <p className="debrief-copy">Наибольшее отклонение: «{debrief.worstBudget.task.short}» — {budgetPosition(debrief.worstBudget.task.budget, debrief.worstBudget.state.spent)}.</p>
               </article>
               <article className="debrief-card">
                 <span className="debrief-label">КОМАНДА</span>
