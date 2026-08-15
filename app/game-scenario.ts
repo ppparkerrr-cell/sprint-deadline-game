@@ -71,7 +71,12 @@ const taskPool = [
 ];
 
 const colors = ["#ff7352", "#ff9f43", "#8b5cf6", "#3b82f6", "#1fc9a5", "#ef4f91", "#f6b73c", "#69d2e7"];
-const durations = [2.5, 3, 3.5, 4];
+const stageDurationPlans = [
+  [4, 4, 4, 3.5, 2.5],
+  [4, 4, 4, 3, 3],
+  [4, 4, 3.5, 3.5, 3],
+  [4, 3.5, 3.5, 3.5, 3.5],
+];
 
 function createRandom(seed: number) {
   let value = (seed || 4) >>> 0;
@@ -122,54 +127,55 @@ export function generateScenario(seed: number, previous?: Pick<Scenario, "team" 
   });
 
   const previousTaskNames = new Set(previous?.tasks.map((task) => task.name) ?? []);
-  const countOptions = [4, 5, 6, 7].filter((count) => count !== previous?.tasks.length);
+  const countOptions = [5, 6, 7].filter((count) => count !== previous?.tasks.length);
   const taskCount = countOptions[Math.floor(random() * countOptions.length)];
   const selectedTasks = shuffle(taskPool.filter((task) => !previousTaskNames.has(task.name)), random).slice(0, taskCount);
   const taskColors = shuffle(colors, random);
   const medianRate = [...team].map((person) => person.cost / person.speed).sort((a, b) => a - b)[Math.floor(team.length / 2)];
   const tasks: ProjectTask[] = [];
-
-  selectedTasks.forEach((template, index) => {
-    let start = 0;
-    let dependsOn: number[] = [];
-
-    if (index === 1) {
-      start = [0, 0.5, 1][Math.floor(random() * 3)];
-    } else if (index >= 2) {
-      const eligibleParents = tasks
-        .map((task, taskIndex) => ({ task, taskIndex }))
-        .filter(({ task }) => task.end <= DEADLINE - Math.min(...durations));
-      const useDependency = index === 2 || random() < 0.76;
-      if (useDependency && eligibleParents.length > 0) {
-        const parent = eligibleParents[Math.floor(random() * eligibleParents.length)];
-        start = parent.task.end;
-        dependsOn = [parent.taskIndex];
-      } else {
-        start = roundTo(0.5 + random() * 8.5, 0.5);
-      }
-    }
-
-    const possibleDurations = durations.filter((duration) => start + duration <= DEADLINE);
-    let duration = possibleDurations[Math.floor(random() * possibleDurations.length)] ?? Math.max(1, DEADLINE - start);
-    if (index === taskCount - 1) {
-      duration = durations[Math.floor(random() * durations.length)];
-      start = DEADLINE - duration;
-      dependsOn = [];
-    }
-    const end = start + duration;
-    const effort = Math.round(duration * (0.75 + random() * 0.25) * 10) / 10;
-    const budget = roundTo(effort * medianRate * (0.94 + random() * 0.14), 10);
-
-    tasks.push({
-      id: `task-${seed >>> 0}-${index}`,
-      ...template,
-      start,
-      end,
-      effort,
-      budget,
-      color: taskColors[index % taskColors.length],
-      dependsOn,
+  const stageDurations = shuffle(
+    stageDurationPlans[Math.floor(random() * stageDurationPlans.length)],
+    random,
+  );
+  const tasksPerStage = Array.from({ length: stageDurations.length }, () => 1);
+  shuffle([0, 1, 2, 3, 4], random)
+    .slice(0, taskCount - stageDurations.length)
+    .forEach((stageIndex) => {
+      tasksPerStage[stageIndex] += 1;
     });
+
+  let start = 0;
+  let templateIndex = 0;
+  let previousStageIndexes: number[] = [];
+
+  stageDurations.forEach((duration, stageIndex) => {
+    const currentStageIndexes: number[] = [];
+
+    for (let position = 0; position < tasksPerStage[stageIndex]; position += 1) {
+      const index = tasks.length;
+      const template = selectedTasks[templateIndex];
+      const dependsOn = previousStageIndexes.length === 0
+        ? []
+        : [previousStageIndexes[Math.floor(random() * previousStageIndexes.length)]];
+      const effort = Math.round(duration * (0.75 + random() * 0.25) * 10) / 10;
+      const budget = roundTo(effort * medianRate * (0.94 + random() * 0.14), 10);
+
+      tasks.push({
+        id: `task-${seed >>> 0}-${index}`,
+        ...template,
+        start,
+        end: start + duration,
+        effort,
+        budget,
+        color: taskColors[index % taskColors.length],
+        dependsOn,
+      });
+      currentStageIndexes.push(index);
+      templateIndex += 1;
+    }
+
+    previousStageIndexes = currentStageIndexes;
+    start += duration;
   });
 
   const budget = roundTo(tasks.reduce((sum, task) => sum + task.budget, 0) * (1.08 + random() * 0.08), 50);

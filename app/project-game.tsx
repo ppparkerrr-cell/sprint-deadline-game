@@ -582,9 +582,9 @@ export default function ProjectGame() {
       <div className="ambient ambient-two" />
 
       <header className="topbar">
-        <a className="brand" href="#game" aria-label="СПРИНТ: ДЕДЛАЙН — к игровому полю">
+        <a className="brand" href="#game" aria-label="ДЕДЛАЙН — к игровому полю">
           <span className="brand-mark"><i /><i /><i /></span>
-          <span><b>СПРИНТ</b><em>ДЕДЛАЙН</em></span>
+          <b>ДЕДЛАЙН</b>
         </a>
         <div className="top-actions">
           <button className="quiet-button" onClick={() => setShowRules(true)}>Как играть</button>
@@ -595,7 +595,7 @@ export default function ProjectGame() {
       <section className="hero" id="game">
         <div>
           <p className="eyebrow"><span /> ПРОЕКТ 04 · ЗАПУСК ПРИЛОЖЕНИЯ</p>
-          <h1>Уложись в срок.<br /><span>Не сожги команду.</span></h1>
+          <h1>Уложись в срок.<br /><span>Не сожги бюджет.</span></h1>
         </div>
         <div className="hero-actions">
           <p className="hero-copy">Распредели людей по задачам, реагируй на события и доведи продукт до релиза за 18 недель.</p>
@@ -672,7 +672,6 @@ export default function ProjectGame() {
         <section className="gantt-panel">
           <div className="panel-heading gantt-heading">
             <div><p className="section-kicker">ПЛАН ПРОЕКТА</p><h2>Диаграмма Ганта</h2></div>
-            <div className="view-switch" aria-label="Масштаб диаграммы"><button className="active">Недели</button><button disabled>Месяцы</button></div>
           </div>
           <div className="gantt-legend" aria-label="Условные обозначения диаграммы">
             <span><i className="legend-planned" />План задачи</span>
