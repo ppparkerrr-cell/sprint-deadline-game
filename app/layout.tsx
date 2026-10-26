@@ -8,18 +8,18 @@ const siteUrl = "https://game.ireshev.com";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
-  title: "СПРИНТ: ДЕДЛАЙН — игра про управление проектом",
+  title: "ДЕДЛАЙН — игра про управление проектом",
   description: "Распредели команду по задачам, удержи бюджет и выпусти продукт за 18 недель.",
-  applicationName: "СПРИНТ: ДЕДЛАЙН",
+  applicationName: "ДЕДЛАЙН",
   openGraph: {
-    title: "СПРИНТ: ДЕДЛАЙН",
-    description: "Не сожги команду. Уложись в срок.",
+    title: "ДЕДЛАЙН",
+    description: "Уложись в срок. Не сожги бюджет.",
     locale: "ru_RU",
     type: "website",
     url: siteUrl,
-    images: [{ url: `${siteUrl}/og.png`, width: 1200, height: 630, alt: "СПРИНТ: ДЕДЛАЙН — игра про управление проектом" }],
+    images: [{ url: `${siteUrl}/deadline-og.png`, width: 1200, height: 630, alt: "ДЕДЛАЙН — игра про управление проектом" }],
   },
-  twitter: { card: "summary_large_image", title: "СПРИНТ: ДЕДЛАЙН", description: "Игра-тренажёр проектного мышления", images: [`${siteUrl}/og.png`] },
+  twitter: { card: "summary_large_image", title: "ДЕДЛАЙН", description: "Игра-тренажёр проектного мышления", images: [`${siteUrl}/deadline-og.png`] },
 };
 
 export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#111318", colorScheme: "dark" };

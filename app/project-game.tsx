@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import Image from "next/image";
+import TelegramCta from "./telegram-cta";
 import { DEADLINE, dependenciesComplete, generateScenario, isTaskActive, isTaskComplete } from "./game-scenario";
 import type { Person, ProjectTask } from "./game-scenario";
 
@@ -222,7 +223,7 @@ function chooseEvent(current: GameState): EventDefinition {
       tone: "mixed",
       choices: [
         { id: "manual-demo", title: "Подготовить вручную", description: "Команда отвлечётся на демонстрацию без дополнительных расходов.", outcome: "календарь проекта +0,75 недели", tag: "+0,75 НЕД.", tone: "bad", effects: [{ kind: "time", weeks: 0.75 }] },
-        { id: "night-sprint", title: "Оплатить ночной спринт", description: "Демо будет готово, но специалист немного потеряет темп.", outcome: `+${money(260)} · «${task.short}»: +8% · ${person.name}: −0,07×`, tag: "+260 ТЫС. ₽", tone: "mixed", effects: [{ kind: "spent", amount: 260, taskIndex: targetTask }, { kind: "progress", amount: 8, taskIndex: targetTask }, { kind: "speed", amount: -0.07, personIndex: targetPerson }] },
+        { id: "night-sprint", title: "Оплатить ночную работу", description: "Демо будет готово, но специалист немного потеряет темп.", outcome: `+${money(260)} · «${task.short}»: +8% · ${person.name}: −0,07×`, tag: "+260 ТЫС. ₽", tone: "mixed", effects: [{ kind: "spent", amount: 260, taskIndex: targetTask }, { kind: "progress", amount: 8, taskIndex: targetTask }, { kind: "speed", amount: -0.07, personIndex: targetPerson }] },
         { id: "small-demo", title: "Показать сокращённую версию", description: "Готовность вырастет, но заказчик уменьшит доступный бюджет.", outcome: `«${task.short}»: +14% · бюджет −${money(380)}`, tag: "МЕНЬШЕ БЮДЖЕТ", tone: "mixed", effects: [{ kind: "progress", amount: 14, taskIndex: targetTask }, { kind: "budget", amount: -380 }] },
       ],
     },
@@ -715,6 +716,8 @@ export default function ProjectGame() {
         </div>
       </section>
 
+      <TelegramCta />
+
       <section ref={inlineGuideRef} className={`how-to-section ${isInlineGuideExpanded ? "expanded" : "collapsed"}`} id="how-to-play" aria-labelledby="how-to-heading">
         {isInlineGuideExpanded ? <>
           <div className="how-to-copy">
@@ -893,7 +896,7 @@ export default function ProjectGame() {
         </div>
       </section>
 
-      <footer><p>СПРИНТ: ДЕДЛАЙН</p><span>Игра-тренажёр проектного мышления</span><button onClick={openRules}>Подробная инструкция</button></footer>
+      <footer><p>ДЕДЛАЙН</p><span>Игра-тренажёр проектного мышления</span><button onClick={openRules}>Подробная инструкция</button></footer>
 
       {game.pendingEvent && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="event-title">
@@ -965,6 +968,7 @@ export default function ProjectGame() {
               <button className="replay-button" onClick={replayScenario}>↺ ПЕРЕИГРАТЬ СЦЕНАРИЙ</button>
               <button onClick={startFreshProject}>НОВЫЙ ПРОЕКТ →</button>
             </div>
+            <TelegramCta afterReport />
           </div>
         </div>
       )}
